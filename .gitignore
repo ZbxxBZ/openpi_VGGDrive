@@ -1,0 +1,31 @@
+# Nested original checkouts (temporarily renamed while seeding this repo)
+.git.bak/
+**/.git.bak/
+
+# Python
+**/__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.venv/
+venv/
+.env
+*.egg-info/
+
+# OpenPI training artifacts and weights (too large for GitHub)
+openpi/checkpoints/
+openpi/assets/
+openpi/data/
+openpi/wandb/
+**/*.pt
+**/*.pth
+**/*.safetensors
+**/*.tar
+**/*.bin
+
+# Editor / agent leftovers
+.idea/
+.vscode/
+*MEMORY.md
