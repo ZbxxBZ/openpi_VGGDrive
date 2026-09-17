@@ -66,6 +66,15 @@ class AssetsConfig:
 class DataConfig:
     # LeRobot repo id. If None, fake data will be created.
     repo_id: str | None = None
+    # Optional local LeRobot dataset root. This avoids Hub access and is required
+    # when the dataset is stored outside HF_LEROBOT_HOME.
+    lerobot_root: str | None = None
+    # Explicit decoder for LeRobot video datasets. ``pyav`` is useful on systems
+    # where TorchCodec and its matching FFmpeg libraries are unavailable.
+    lerobot_video_backend: str | None = None
+    # Optional episode subset, primarily useful for deterministic data-pipeline
+    # smoke tests. None uses every episode.
+    lerobot_episodes: tuple[int, ...] | None = None
     # Directory within the assets directory containing the data assets.
     asset_id: str | None = None
     # Contains precomputed normalization stats. If None, normalization will not be performed.
@@ -848,6 +857,51 @@ _CONFIGS = [
         # Both pi0.5 time MLPs and expert adaRMS projections train under adapter_action.
         batch_size=8,
         num_train_steps=30_000,
+    ),
+    TrainConfig(
+        name="pi05_cvge_omega_robotwin",
+        model=pi0_config.Pi0Config(
+            pi05=True,
+            action_horizon=32,
+            discrete_state_input=True,
+            geometry=GeometryConfig(enabled=True, backbone="vggt_omega", train_policy="adapter_only"),
+            pytorch_compile_mode=None,
+        ),
+        data=LeRobotAlohaDataConfig(
+            repo_id="robotwin_unified",
+            assets=AssetsConfig(
+                assets_dir="/root/work/weights/pi05_robotwin2/assets",
+                asset_id="pi0.5_clean_randomize_joint_training",
+            ),
+            adapt_to_pi=True,
+            use_delta_joint_actions=True,
+            base_config=DataConfig(
+                prompt_from_task=True,
+                lerobot_root="/root/data/robotwin_unified",
+                lerobot_video_backend="pyav",
+            ),
+            repack_transforms=_transforms.Group(
+                inputs=[
+                    _transforms.RepackTransform(
+                        {
+                            "images": {
+                                "cam_high": "observation.images.cam_high",
+                                "cam_left_wrist": "observation.images.cam_left_wrist",
+                                "cam_right_wrist": "observation.images.cam_right_wrist",
+                            },
+                            "state": "observation.state",
+                            "actions": "action",
+                            "prompt": "prompt",
+                        }
+                    )
+                ]
+            ),
+        ),
+        pytorch_weight_path="/root/work/weights/pi05_robotwin2",
+        batch_size=1,
+        num_workers=0,
+        num_train_steps=30_000,
+        wandb_enabled=False,
     ),
     #
     # Fine-tuning Aloha configs.

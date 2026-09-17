@@ -7,7 +7,13 @@ from typing import Literal, Protocol, SupportsIndex, TypeVar
 
 import jax
 import jax.numpy as jnp
-import lerobot.common.datasets.lerobot_dataset as lerobot_dataset
+
+try:
+    # LeRobot >= 0.4, including the v3 file-based dataset format.
+    import lerobot.datasets.lerobot_dataset as lerobot_dataset
+except ImportError:
+    # OpenPI's original pinned LeRobot revision (v2.1-era layout).
+    import lerobot.common.datasets.lerobot_dataset as lerobot_dataset
 import numpy as np
 import torch
 
@@ -137,16 +143,36 @@ def create_torch_dataset(
     if repo_id == "fake":
         return FakeDataset(model_config, num_samples=1024)
 
-    dataset_meta = lerobot_dataset.LeRobotDatasetMetadata(repo_id)
+    dataset_kwargs = {}
+    if data_config.lerobot_root is not None:
+        dataset_kwargs["root"] = data_config.lerobot_root
+    if data_config.lerobot_video_backend is not None:
+        dataset_kwargs["video_backend"] = data_config.lerobot_video_backend
+    if data_config.lerobot_episodes is not None:
+        dataset_kwargs["episodes"] = list(data_config.lerobot_episodes)
+
+    dataset_meta = lerobot_dataset.LeRobotDatasetMetadata(
+        repo_id,
+        **({"root": data_config.lerobot_root} if data_config.lerobot_root is not None else {}),
+    )
     dataset = lerobot_dataset.LeRobotDataset(
         data_config.repo_id,
         delta_timestamps={
             key: [t / dataset_meta.fps for t in range(action_horizon)] for key in data_config.action_sequence_keys
         },
+        **dataset_kwargs,
     )
 
     if data_config.prompt_from_task:
-        dataset = TransformedDataset(dataset, [_transforms.PromptFromLeRobotTask(dataset_meta.tasks)])
+        tasks = dataset_meta.tasks
+        if not isinstance(tasks, dict):
+            # LeRobot v3 stores tasks as a DataFrame indexed by task text with a
+            # task_index column. Keep the transform interface shared with v2.
+            if "task_index" not in tasks.columns:
+                raise ValueError("LeRobot task metadata must contain a task_index column")
+            task_text = tasks["task"] if "task" in tasks.columns else tasks.index
+            tasks = dict(zip(tasks["task_index"].tolist(), task_text, strict=True))
+        dataset = TransformedDataset(dataset, [_transforms.PromptFromLeRobotTask(tasks)])
 
     return dataset
 

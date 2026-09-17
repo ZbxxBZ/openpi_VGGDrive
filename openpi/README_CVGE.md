@@ -2,7 +2,7 @@
 
 本实现把 VGGDrive 的 CVGE（Cross-View Geometric Enabler）接入 OpenPI 的 **PyTorch π0 和 π0.5**：冻结 VGGT 或 VGGT-Omega，提取多视角几何特征；PaliGemma 每层的视觉 token 通过独立 Cross-Attention 查询这些特征；动作仍由对应模型原有的动作专家与 Flow Matching 生成。π0.5 保留离散状态输入选项和 adaRMS 时间条件。
 
-当前状态：π0／π0.5 × VGGT／VGGT-Omega 四种组合的代码和服务器测试用例已编写。本地仅进行静态检查，尚未运行模型、单元测试、GPU 训练或任务评测；运行验证留待服务器准备好后进行。本文命令用于后续服务器验证。
+当前状态：π0／π0.5 × VGGT／VGGT-Omega 四种组合的代码已完成，服务器回归测试为 65 passed。使用真实 π0.5 与 VGGT-Omega 权重完成了几何前向、动作采样及 3 个优化步的 Stage 1 GPU smoke；尚未进行真实任务训练、checkpoint 保存后重载、多 GPU 训练或任务成功率评测。
 
 ## 1. 架构与迁移范围
 
@@ -90,7 +90,8 @@ JAX/Flax 后端尚未实现 CVGE。启用几何配置后调用 JAX π0 或 π0.5
 | `src/openpi/models/model.py` | 可选 `camera_to_world` 观测字段、策略权重加载 |
 | `src/openpi/training/config.py` | π0 / π0.5 与两个几何后端的四个 LIBERO 配置 |
 | `scripts/train_pytorch.py` | 可训练参数筛选、加载、保存和断点恢复 |
-| `src/openpi/models_pytorch/*cvge_test.py`、`geometry_checkpoint_test.py`、`vggt_omega_test.py` | 待服务器执行的回归测试，包括 π0.5 数据与状态语义 |
+| `scripts/smoke_cvge_stage1.py` | 使用真实本地权重进行几何、策略及 Stage 1 优化步 smoke |
+| `src/openpi/models_pytorch/*cvge_test.py`、`geometry_checkpoint_test.py`、`vggt_omega_test.py` | 回归测试，包括 π0.5 数据与状态语义 |
 
 VGGDrive 原始参考：`../VGGDrive/inject_utils/Qwen2_5_vggt_fusion_inject_cam.py` 和 `../VGGDrive/inject_utils/vggt_utils.py`。几何编码器直接使用其 `vggt.models.aggregator.Aggregator`，不实例化深度、点云、跟踪头或 Qwen 模型。VGGT-Omega 同样只实例化 `vggt_omega.models.aggregator.Aggregator`，不构建 camera、dense 或 text-alignment head。
 
@@ -118,7 +119,7 @@ git clone https://github.com/facebookresearch/vggt-omega.git ../vggt-omega
 git -C ../vggt-omega checkout b2c61f6631d9f344a2d914bfba5d9529d6fc1d35
 ```
 
-后端的 [官方基础依赖](https://github.com/facebookresearch/vggt-omega/blob/b2c61f6631d9f344a2d914bfba5d9529d6fc1d35/requirements.txt) 与 OpenPI 固定的 Torch 版本兼容；这里直接导入 aggregator，不需要安装 demo 或训练数据处理依赖。实际环境兼容性仍待服务器验证。
+后端的 [官方基础依赖](https://github.com/facebookresearch/vggt-omega/blob/b2c61f6631d9f344a2d914bfba5d9529d6fc1d35/requirements.txt) 与 OpenPI 固定的 Torch 版本兼容；这里直接导入 aggregator，不需要安装 demo 或训练数据处理依赖。该组合已在 Torch 2.7.1+cu126、RTX 3090 上通过真实权重 smoke。
 
 以下命令均从 `openpi/` 目录执行，使用 Linux / Python 3.11。环境安装以仓库 [PyTorch 说明](README.md#pytorch-support) 为基础，使用项目固定的 `torch==2.7.1`、`transformers==4.53.2`：
 
@@ -263,6 +264,10 @@ uv run scripts/train_pytorch.py pi05_cvge_omega_libero \
 | `adapter_action` | CVGE、动作专家、对应模型的输入模块、动作输出投影；π0.5 包括 time MLP 和专家 adaRMS 投影 |
 | `full` | π0 或 π0.5 的全部权重，以及 CVGE |
 
+推荐将 `adapter_only` 作为 Stage 1：冻结 VGGT／Omega、PaliGemma 和动作专家，仅让逐层 CVGE 先学会把几何信息接入视觉 token。Stage 1 smoke 至少需要 2 个优化步，因为 CVGE 末端投影为零初始化：第 1 步先使末端投影离开零值，第 2 步起梯度才能进入每层的视觉投影、几何投影和 Cross-Attention。这里默认运行 3 步，便于同时检查这一梯度传播过程。正式训练没有硬编码步数，可先以 5k steps 为检查点，根据验证集决定是否延长到约 10k。
+
+Stage 2 使用 `adapter_action`，从 Stage 1 checkpoint 初始化，联合训练 CVGE、动作专家及对应动作输入／输出模块；π0.5 还包括 time MLP 和动作专家的 adaRMS 投影。其作用是让原动作生成分支适应已经注入的几何表征，可先以约 20k steps 为起点，再由验证曲线和任务成功率决定停止时间。`full` 是可选的更激进策略，会连 PaliGemma 一并解冻。
+
 VGGT / Omega 在所有策略下保持冻结和 `eval()`。冻结动作模型时只关闭权重梯度，仍保留动作损失穿过模型计算回传到 CVGE 的链路。优化器只接收 `requires_grad=True` 的参数。
 
 可以先用 `--model.geometry.train-policy adapter_only` 进行适配，再以其完整 checkpoint 为 `--pytorch-weight-path`，使用新实验名和 `adapter_action` 或 `full` 开始下一阶段。切换训练阶段会创建新的优化器；`--resume` 用于恢复相同训练策略。
@@ -350,9 +355,9 @@ actions = result['actions']
 
 每次新观测的执行顺序是：一次 VGGT 编码 → 一次包含全部 CVGE 的 prefix prefill → 复用逐层 prefix KV cache 进行多步动作去噪。去噪步骤不重复编码图像或注入 CVGE，不写回 prefix cache。下一次观测重新计算几何和 prefix cache。
 
-## 8. 待服务器运行的验证
+## 8. 服务器验证与 Stage 1 smoke
 
-先在已经安装 OpenPI 和 `transformers_replace` 的服务器环境中运行：
+2026-09-15 在 RTX 3090 24 GB、Torch 2.7.1+cu126 环境中运行以下回归测试，结果为 **65 passed，1 warning**：
 
 ```bash
 uv run pytest -q \
@@ -377,4 +382,26 @@ uv run pytest -q \
 - 原 π0 / π0.5 初始化、完整 checkpoint 往返、错误配置与缺失权重拒绝加载，包括离散状态设置错配和旧元数据迁移。
 - VGGT-Omega 接口：稀疏层输出只取最后一层、16px patch 与 17 个特殊 token、多种权重格式严格加载、源码命名空间隔离、RoPE 设置告警，以及 `vggt` / `vggt_omega` 的 checkpoint 元数据互斥。
 
-上述测试不能替代真实权重和真实数据验证。后续还需进行真实 VGGT／Omega 和 π0／π0.5 的 GPU 前后向、BF16 数值检查、保存后重载推理、多 GPU 训练和任务评测。任务效果应分别比较各动作模型的原版、单次入口注入和本逐层 CVGE；目前没有成功率或性能提升结论。
+真实权重 smoke 可独立运行，也可用 `--mode all` 顺序运行全部三项：
+
+```bash
+python scripts/smoke_cvge_stage1.py \
+    --mode all \
+    --train-steps 3 \
+    --omega-source /path/to/vggt-omega \
+    --omega-weights /path/to/vggt_omega_1b_416_reproduce.pt \
+    --pi05-weights /path/to/pi05/model.safetensors
+```
+
+本次真实 π0.5 + VGGT-Omega smoke 结果：
+
+| 项目 | 结果 |
+| --- | --- |
+| Omega 几何前向 | `[1, 1, 693, 2048]`，BF16，全部有限值；峰值显存 3.432 GiB |
+| π0.5 一步动作采样 | `[1, 32, 32]`，FP32，全部有限值；峰值显存 10.660 GiB |
+| Stage 1 三步 loss | `4.122395 → 4.024881 → 3.915890` |
+| CVGE 内部梯度 | step 0 为零初始化预期值；step 1、2 均为 18/18 层具有非零有限梯度 |
+| 冻结边界 | Omega、PaliGemma、动作专家均无梯度，符合 `adapter_only` |
+| 三步训练峰值显存 | 11.248 GiB |
+
+该 smoke 使用合成图像、状态、prompt 和动作，只验证真实权重加载、张量形状、BF16 数值、逐层梯度、优化器更新及冻结边界。它不代表真实任务效果。后续仍需运行数据集训练、checkpoint 保存后重载、π0 真实权重 smoke、多 GPU 训练和任务评测；任务效果应比较原版、单次入口注入和本逐层 CVGE，目前没有成功率或性能提升结论。
