@@ -112,6 +112,18 @@ class InjectDefaultPrompt(DataTransformFn):
 
 
 @dataclasses.dataclass(frozen=True)
+class PreserveGeometryImages(DataTransformFn):
+    """Keep pre-resize RGB inputs for a deterministic geometry branch."""
+
+    def __call__(self, data: DataDict) -> DataDict:
+        if "geometry_image" not in data:
+            # ResizeImages replaces the image dictionary and does not mutate its arrays,
+            # so a shallow copy preserves the original resolution without duplicating pixels.
+            data["geometry_image"] = dict(data["image"])
+        return data
+
+
+@dataclasses.dataclass(frozen=True)
 class Normalize(DataTransformFn):
     norm_stats: at.PyTree[NormStats] | None
     # If true, will use quantile normalization. Otherwise, normal z-score normalization will be used.

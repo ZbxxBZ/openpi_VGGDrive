@@ -64,6 +64,11 @@ def _validate_batch(observation, actions: torch.Tensor) -> dict:
             raise RuntimeError(f"Invalid transformed image for {key}: {tuple(image.shape)}")
         if not bool(observation.image_masks[key].all()):
             raise RuntimeError(f"Real camera {key} was marked invalid")
+    if observation.geometry_images is None or set(observation.geometry_images) != set(IMAGE_KEYS):
+        raise RuntimeError("The real-data pipeline did not preserve raw geometry images")
+    for key, image in observation.geometry_images.items():
+        if image.ndim != 4 or image.shape[1] != 3 or not torch.isfinite(image).all():
+            raise RuntimeError(f"Invalid raw geometry image for {key}: {tuple(image.shape)}")
     if tuple(actions.shape) != (1, 32, 32) or not torch.isfinite(actions).all():
         raise RuntimeError(f"Invalid transformed action batch: {tuple(actions.shape)}")
     if tuple(observation.state.shape) != (1, 32) or not torch.isfinite(observation.state).all():
@@ -72,6 +77,7 @@ def _validate_batch(observation, actions: torch.Tensor) -> dict:
         raise RuntimeError("The real LeRobot task produced an empty prompt")
     return {
         "image_shapes": {key: list(observation.images[key].shape) for key in IMAGE_KEYS},
+        "geometry_image_shapes": {key: list(observation.geometry_images[key].shape) for key in IMAGE_KEYS},
         "valid_cameras": sum(bool(observation.image_masks[key].all()) for key in IMAGE_KEYS),
         "state_shape": list(observation.state.shape),
         "action_shape": list(actions.shape),

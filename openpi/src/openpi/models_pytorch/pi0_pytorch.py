@@ -165,11 +165,14 @@ class PI0Pytorch(nn.Module):
                 self.paligemma_with_expert.gemma_expert.eval()
         return self
 
-    def _prepare_geometry(self, images, image_masks, observation):
+    def _prepare_geometry(self, geometry_images, image_masks, observation):
         if not self.config.geometry.enabled:
             return None
+        missing_keys = set(self.config.geometry.image_keys) - set(geometry_images)
+        if missing_keys:
+            raise ValueError(f"geometry_images missing keys: {sorted(missing_keys)}")
         indices = [_preprocessing.IMAGE_KEYS.index(key) for key in self.config.geometry.image_keys]
-        selected_images = [images[index] for index in indices]
+        selected_images = [geometry_images[key] for key in self.config.geometry.image_keys]
         selected_masks = [image_masks[index] for index in indices]
         poses = None
         if self.config.geometry.use_camera_pose:
@@ -179,9 +182,9 @@ class PI0Pytorch(nn.Module):
                 if key not in pose_dict:
                     if mask.any():
                         raise ValueError(f"Missing camera_to_world pose for valid camera {key}")
-                    pose_list.append(torch.zeros(mask.shape[0], 4, 4, device=images[0].device))
+                    pose_list.append(torch.zeros(mask.shape[0], 4, 4, device=selected_images[0].device))
                 else:
-                    pose_list.append(torch.as_tensor(pose_dict[key], device=images[0].device))
+                    pose_list.append(torch.as_tensor(pose_dict[key], device=selected_images[0].device))
             poses = torch.stack(pose_list, dim=1)
         return self.vggt_encoder(selected_images, selected_masks, poses)
 
@@ -222,6 +225,10 @@ class PI0Pytorch(nn.Module):
 
     def _preprocess_observation(self, observation, *, train=True):
         """Helper method to preprocess observation."""
+        # geometry_images is captured before policy preprocessing. Model transforms
+        # populate it with pre-224-resize RGB; direct callers fall back to their
+        # unaugmented observation images for backwards compatibility.
+        geometry_images = getattr(observation, "geometry_images", None) or observation.images
         observation = _preprocessing.preprocess_observation_pytorch(observation, train=train)
         return (
             list(observation.images.values()),
@@ -229,6 +236,7 @@ class PI0Pytorch(nn.Module):
             observation.tokenized_prompt,
             observation.tokenized_prompt_mask,
             observation.state,
+            geometry_images,
         )
 
     def sample_noise(self, shape, device):
@@ -381,10 +389,10 @@ class PI0Pytorch(nn.Module):
 
     def forward(self, observation, actions, noise=None, time=None) -> Tensor:
         """Do a full training forward pass and compute the loss (batch_size x num_steps x num_motors)"""
-        images, img_masks, lang_tokens, lang_masks, state = self._preprocess_observation(
+        images, img_masks, lang_tokens, lang_masks, state, geometry_images = self._preprocess_observation(
             observation, train=self.training
         )
-        geometry = self._prepare_geometry(images, img_masks, observation)
+        geometry = self._prepare_geometry(geometry_images, img_masks, observation)
 
         if noise is None:
             noise = self.sample_noise(actions.shape, actions.device)
@@ -453,8 +461,10 @@ class PI0Pytorch(nn.Module):
             actions_shape = (bsize, self.config.action_horizon, self.config.action_dim)
             noise = self.sample_noise(actions_shape, device)
 
-        images, img_masks, lang_tokens, lang_masks, state = self._preprocess_observation(observation, train=False)
-        geometry = self._prepare_geometry(images, img_masks, observation)
+        images, img_masks, lang_tokens, lang_masks, state, geometry_images = self._preprocess_observation(
+            observation, train=False
+        )
+        geometry = self._prepare_geometry(geometry_images, img_masks, observation)
 
         prefix_embs, prefix_pad_masks, prefix_att_masks, visual_mask = self.embed_prefix(
             images, img_masks, lang_tokens, lang_masks

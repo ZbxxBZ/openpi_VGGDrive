@@ -127,3 +127,21 @@ def test_encoder_all_views_missing_never_calls_vggt():
     assert not aggregator.calls
     assert context.tokens.shape == (2, 3, 6, 2048)
     assert torch.isfinite(context.tokens).all()
+
+
+def test_encoder_letterboxes_raw_images_without_aspect_ratio_distortion():
+    aggregator = _MixingAggregator()
+    encoder = VGGTEncoder(_config(image_size=14, image_keys=("base_0_rgb",)), load_weights=False, aggregator=aggregator)
+    image = torch.ones(1, 3, 7, 14)
+    mask = torch.ones(1, dtype=torch.bool)
+
+    encoder([image], [mask])
+    encoder([image], [mask])
+
+    assert len(aggregator.calls) == 2
+    first, second = aggregator.calls
+    torch.testing.assert_close(first, second)
+    assert first.shape == (1, 1, 3, 14, 14)
+    assert torch.count_nonzero(first[:, :, :, :3]) == 0
+    assert torch.count_nonzero(first[:, :, :, 10:]) == 0
+    assert torch.all(first[:, :, :, 3:10] == 1)

@@ -2,6 +2,7 @@
 
 import numpy as np
 import pytest
+import torch
 
 from openpi import transforms
 from openpi.models import model as model_lib
@@ -38,7 +39,7 @@ def test_pi05_state_reaches_tokenizer_and_preserves_camera_data(monkeypatch, bac
     pipeline = transforms.compose(training_config.ModelTransformFactory()(config).inputs)
     state = np.array([0.1, -0.4, 0.7], dtype=np.float32)
     pose = np.eye(4, dtype=np.float32)
-    image = np.zeros((224, 224, 3), dtype=np.uint8)
+    image = np.arange(360 * 640 * 3, dtype=np.uint8).reshape(360, 640, 3)
     result = pipeline(
         {
             "prompt": "pick up the cube",
@@ -61,6 +62,30 @@ def test_pi05_state_reaches_tokenizer_and_preserves_camera_data(monkeypatch, bac
     np.testing.assert_array_equal(result["camera_to_world"]["base_0_rgb"], pose)
     assert result["image_mask"]["base_0_rgb"]
     assert result["tokenized_prompt"].shape == (200,)
+    assert result["image"]["base_0_rgb"].shape == (224, 224, 3)
+    assert result["geometry_image"]["base_0_rgb"].shape == image.shape
+    np.testing.assert_array_equal(result["geometry_image"]["base_0_rgb"], image)
+
+
+def test_observation_normalizes_policy_and_geometry_images_independently():
+    policy_image = torch.full((1, 224, 224, 3), 255, dtype=torch.uint8)
+    geometry_image = torch.zeros((1, 360, 640, 3), dtype=torch.uint8)
+    observation = model_lib.Observation.from_dict(
+        {
+            "image": {"base_0_rgb": policy_image},
+            "geometry_image": {"base_0_rgb": geometry_image},
+            "image_mask": {"base_0_rgb": torch.ones(1, dtype=torch.bool)},
+            "state": torch.zeros(1, 32),
+        }
+    )
+
+    assert observation.images["base_0_rgb"].shape == (1, 3, 224, 224)
+    assert observation.geometry_images["base_0_rgb"].shape == (1, 3, 360, 640)
+    assert torch.all(observation.images["base_0_rgb"] == 1)
+    assert torch.all(observation.geometry_images["base_0_rgb"] == -1)
+    restored = observation.to_dict()
+    assert "geometry_image" in restored
+    assert "geometry_images" not in restored
 
 
 @pytest.mark.parametrize("pi05", [False, True])

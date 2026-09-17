@@ -168,18 +168,34 @@ class VGGTEncoder(nn.Module):
             image = image.permute(0, 3, 1, 2)
         if image.shape[1] != 3:
             raise ValueError("VGGT expects three RGB channels")
-        # Input is the very same spatially augmented pi0 observation used by SigLIP, in [-1, 1].
+        # Input is the unaugmented camera RGB preserved by the model transform, in [-1, 1].
         # Both aggregators take [0, 1] and apply their own ImageNet normalization internally.
         image = (image.float() * 0.5 + 0.5).clamp(0, 1)
         size = (self.config.image_size, self.config.image_size)
         if image.shape[-2:] != size:
-            # Keep the original CVGE/VGGT resampling for existing checkpoints.
-            # Omega uses bicubic with antialiasing, following its released loader.
+            # Preserve the raw camera aspect ratio. A direct square resize changes
+            # ray-to-pixel geometry; deterministic letterboxing only adds a fixed
+            # scale and offset and is shared by every sample from a camera stream.
             omega = self.config.backbone == "vggt_omega"
+            height, width = image.shape[-2:]
+            scale = min(size[0] / height, size[1] / width)
+            resized_height = max(1, int(height * scale))
+            resized_width = max(1, int(width * scale))
             image = F.interpolate(
-                image, size=size, mode="bicubic" if omega else "bilinear", align_corners=False, antialias=omega
+                image,
+                size=(resized_height, resized_width),
+                mode="bicubic" if omega else "bilinear",
+                align_corners=False,
+                antialias=omega,
             )
             image = image.clamp(0, 1)
+            pad_height = size[0] - resized_height
+            pad_width = size[1] - resized_width
+            image = F.pad(
+                image,
+                (pad_width // 2, pad_width - pad_width // 2, pad_height // 2, pad_height - pad_height // 2),
+                value=0.0,
+            )
         return image
 
     @torch.no_grad()

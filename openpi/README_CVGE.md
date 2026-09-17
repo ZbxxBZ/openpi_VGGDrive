@@ -8,9 +8,10 @@
 
 ```mermaid
 flowchart TD
-    I[同一观测的多相机 RGB] --> P[共享空间预处理]
+    I[原始多相机 RGB] --> P[OpenPI resize 与随机增强]
+    I --> D[确定性等比例 resize 与 padding]
     P --> S[原 SigLIP 图像编码]
-    P --> V[冻结 VGGT / VGGT-Omega：仅有效相机联合编码]
+    D --> V[冻结 VGGT / VGGT-Omega：仅有效相机联合编码]
     V --> G[最后一组聚合特征：B × V × N_geo × 2048]
     S --> H[视觉 token 与语言 token 组成 prefix]
     H --> C[第 l 个 CVGE：视觉 Q 查询几何 K/V]
@@ -87,7 +88,7 @@ JAX/Flax 后端尚未实现 CVGE。启用几何配置后调用 JAX π0 或 π0.5
 | `src/openpi/models_pytorch/gemma_pytorch.py` | 联合前向和 prefix prefill 共用逐层 CVGE 路径 |
 | `src/openpi/models_pytorch/pi0_pytorch.py` | 观测、几何特征、训练策略与动作采样集成 |
 | `src/openpi/models_pytorch/geometry_checkpoint.py` | 初始化/恢复校验和几何配置保存 |
-| `src/openpi/models/model.py` | 可选 `camera_to_world` 观测字段、策略权重加载 |
+| `src/openpi/models/model.py` | 独立 `geometry_image`、可选 `camera_to_world` 观测字段、策略权重加载 |
 | `src/openpi/training/config.py` | π0 / π0.5 与两个几何后端的四个 LIBERO 配置 |
 | `scripts/train_pytorch.py` | 可训练参数筛选、加载、保存和断点恢复 |
 | `scripts/smoke_cvge_stage1.py` | 使用真实本地权重进行几何、策略及 Stage 1 优化步 smoke |
@@ -183,9 +184,9 @@ uv run examples/convert_jax_model_to_pytorch.py \
 
 `image_size=None` 在配置构造时即解析为数值；用 `dataclasses.replace()` 切换后端并希望采用新后端默认分辨率时，同时传入 `image_size=None`。命令行切换优先选用对应的注册配置，或显式给出分辨率。
 
-当前几何编码器与 SigLIP 使用同一份经过空间增强的 π0 / π0.5 观测，再分别处理布局、分辨率和数值范围。策略图像范围为 `[-1,1]`，几何输入转换为 `[0,1]`，两种聚合器内部再做各自的 ImageNet 归一化。VGGT 保留此前 CVGE 实现的 bilinear 重采样；Omega 采用 bicubic、antialias 和范围裁剪。这里使用策略预处理后的方形图像，并未完整复刻官方 loader 的可变宽高比裁剪与填充流程。VGGT 默认 224 分辨率每视角产生 `16×16+5=261` 个几何 token，VGGT-Omega 默认 416 分辨率产生 `26×26+17=693` 个。
+图像采用两条独立路径。模型 transform 在任何 224 resize 之前把原始多相机 RGB 保存为 `geometry_image`；原 `image` 路径继续执行 OpenPI 的 224 resize，并在训练时执行随机 crop、rotation 和颜色增强后送入 SigLIP。VGGT／Omega 只读取 `geometry_image`，不读取增强结果；它对原始宽高做确定性的等比例缩放和居中 padding，再转换到 `[0,1]`，由聚合器完成 ImageNet 归一化。VGGT 使用 bilinear，Omega 使用 bicubic、antialias 和范围裁剪。这样不会让独立随机空间增强破坏跨视角像素／射线对应，也能保持相机姿态与几何图像一致。直接构造旧式 `Observation` 而没有 `geometry_image` 时，会兼容回退到增强前的 `images`。
 
-把 `image_size` 提高到 518（VGGT）或 512（Omega）会在当前 224 图像预处理之后进行上采样，并增加几何 token 和计算量；它不会恢复原始高分辨率信息。原始高分辨率双分支输入需要另外扩展数据管线。
+VGGT 默认 224 分辨率每视角产生 `16×16+5=261` 个几何 token，VGGT-Omega 默认 416 分辨率产生 `26×26+17=693` 个。把 `image_size` 提高到 518（VGGT）或 512（Omega）会直接从保留的原始 RGB 确定性缩放，增加几何 token 和计算量；是否获得额外信息取决于数据源的原始分辨率。
 
 启用 CVGE 时采样保持 eager 执行，以支持每个样本不同的有效相机组合。示例配置将 `pytorch_compile_mode=None`。训练梯度检查点保留 CVGE dropout 的 RNG 状态。
 
@@ -372,6 +373,7 @@ uv run pytest -q \
 
 - 零初始化回归原 π0 / π0.5 联合前向；只有有效视觉位置被 CVGE 直接更新。
 - 不同有效相机组合、全空几何、无效相机内容污染和相机姿态输入。
+- 原始高分辨率 `geometry_image` 的透传、独立归一化、与 SigLIP 增强路径隔离，以及非方形图像的确定性等比例 padding。
 - 3 层与 18 层联合前向和 prefix-cache 动作计算一致，缓存多次读取不改变内容。
 - 18 个 CVGE（包括最后一个）的动作损失梯度，以及末端投影更新后的内部梯度。
 - 几何特征改变能够影响动作隐藏状态。

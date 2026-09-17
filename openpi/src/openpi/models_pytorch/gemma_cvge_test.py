@@ -398,7 +398,8 @@ def test_action_flow_and_single_geometry_prefill(monkeypatch, pi05, discrete_sta
     model = _tiny_policy(monkeypatch, pi05=pi05, backbone=backbone, discrete_state_input=discrete_state_input)
     config = model.config
     observation = SimpleNamespace(
-        images={key: torch.rand(2, 3, 224, 224) * 2 - 1 for key in config.geometry.image_keys},
+        images={key: torch.ones(2, 3, 224, 224) for key in config.geometry.image_keys},
+        geometry_images={key: -torch.ones(2, 3, 180, 320) for key in config.geometry.image_keys},
         image_masks={key: torch.tensor([True, key != "right_wrist_0_rgb"]) for key in config.geometry.image_keys},
         state=torch.randn(2, 6),
         tokenized_prompt=torch.randint(0, 32, (2, 4)),
@@ -409,6 +410,8 @@ def test_action_flow_and_single_geometry_prefill(monkeypatch, pi05, discrete_sta
     model.train()
     model.gradient_checkpointing_enable()
     loss = model(observation, torch.randn(2, 3, 6)).mean()
+    assert model.vggt_encoder.aggregator.calls
+    assert all(torch.count_nonzero(call) == 0 for call in model.vggt_encoder.aggregator.calls)
     assert torch.isfinite(loss)
     loss.backward()
     assert not model.vggt_encoder.training

@@ -63,6 +63,10 @@ IMAGE_RESOLUTION = (224, 224)
 #         "base_0_rgb": bool[*b],  # True if image is valid
 #         ...  # Masks for additional views
 #     },
+#     "geometry_image": {  # Optional pre-resize images for CVGE.
+#         "base_0_rgb": float32|uint8[*b, hg, wg, 3],
+#         ...
+#     },
 #     "state": float32[*b, s],  # Low-dimensional robot state
 #     "tokenized_prompt": int32[*b, l],  # Optional, tokenized language prompt
 #     "tokenized_prompt_mask": bool[*b, l],  # Optional, mask for tokenized prompt
@@ -94,6 +98,9 @@ class Observation(Generic[ArrayT]):
     # Low-dimensional robot state.
     state: at.Float[ArrayT, "*b s"]
 
+    # Optional pre-resize images for the deterministic CVGE geometry branch.
+    geometry_images: dict[str, at.Float[ArrayT, "*b hg wg c"]] | None = None
+
     # Tokenized prompt.
     tokenized_prompt: at.Int[ArrayT, "*b l"] | None = None
     # Tokenized prompt mask.
@@ -116,16 +123,28 @@ class Observation(Generic[ArrayT]):
         # Ensure that tokenized_prompt and tokenized_prompt_mask are provided together.
         if ("tokenized_prompt" in data) != ("tokenized_prompt_mask" in data):
             raise ValueError("tokenized_prompt and tokenized_prompt_mask must be provided together.")
-        # If images are uint8, convert them to [-1, 1] float32.
-        for key in data["image"]:
-            if data["image"][key].dtype == np.uint8:
-                data["image"][key] = data["image"][key].astype(np.float32) / 255.0 * 2.0 - 1.0
-            elif hasattr(data["image"][key], "dtype") and data["image"][key].dtype == torch.uint8:
-                data["image"][key] = data["image"][key].to(torch.float32).permute(0, 3, 1, 2) / 255.0 * 2.0 - 1.0
+        # If images are uint8, convert them to [-1, 1] float32. Torch inputs arrive
+        # batched and channels-last from the data loader / policy transform.
+        for field in ("image", "geometry_image"):
+            if field not in data:
+                continue
+            for key, image in data[field].items():
+                if image.dtype == np.uint8:
+                    data[field][key] = image.astype(np.float32) / 255.0 * 2.0 - 1.0
+                elif hasattr(image, "dtype") and image.dtype == torch.uint8:
+                    converted = image.to(torch.float32)
+                    if converted.ndim != 4:
+                        raise ValueError(f"Torch {field} inputs must have shape [B, H, W, C] or [B, C, H, W]")
+                    if converted.shape[-1] == 3:
+                        converted = converted.permute(0, 3, 1, 2)
+                    elif converted.shape[1] != 3:
+                        raise ValueError(f"Torch {field} inputs must have three RGB channels")
+                    data[field][key] = converted / 255.0 * 2.0 - 1.0
         return cls(
             images=data["image"],
             image_masks=data["image_mask"],
             state=data["state"],
+            geometry_images=data.get("geometry_image"),
             tokenized_prompt=data.get("tokenized_prompt"),
             tokenized_prompt_mask=data.get("tokenized_prompt_mask"),
             token_ar_mask=data.get("token_ar_mask"),
@@ -138,6 +157,9 @@ class Observation(Generic[ArrayT]):
         result = dataclasses.asdict(self)
         result["image"] = result.pop("images")
         result["image_mask"] = result.pop("image_masks")
+        geometry_images = result.pop("geometry_images")
+        if geometry_images is not None:
+            result["geometry_image"] = geometry_images
         return result
 
 
