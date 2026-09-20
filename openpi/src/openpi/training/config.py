@@ -866,6 +866,51 @@ _CONFIGS = [
         num_train_steps=30_000,
     ),
     TrainConfig(
+        name="pi05_cvge_robotwin",
+        model=pi0_config.Pi0Config(
+            pi05=True,
+            action_horizon=32,
+            discrete_state_input=True,
+            geometry=GeometryConfig(enabled=True, backbone="vggt", train_policy="adapter_only"),
+            pytorch_compile_mode=None,
+        ),
+        data=LeRobotAlohaDataConfig(
+            repo_id="robotwin_unified",
+            assets=AssetsConfig(
+                assets_dir="/root/zbx/weights/pi05_robotwin2/assets",
+                asset_id="pi0.5_clean_randomize_joint_training",
+            ),
+            adapt_to_pi=True,
+            use_delta_joint_actions=True,
+            base_config=DataConfig(
+                prompt_from_task=True,
+                lerobot_root="/root/zbx/data/robotwin_unified",
+                lerobot_video_backend="pyav",
+            ),
+            repack_transforms=_transforms.Group(
+                inputs=[
+                    _transforms.RepackTransform(
+                        {
+                            "images": {
+                                "cam_high": "observation.images.cam_high",
+                                "cam_left_wrist": "observation.images.cam_left_wrist",
+                                "cam_right_wrist": "observation.images.cam_right_wrist",
+                            },
+                            "state": "observation.state",
+                            "actions": "action",
+                            "prompt": "prompt",
+                        }
+                    )
+                ]
+            ),
+        ),
+        pytorch_weight_path="/root/zbx/weights/pi05_robotwin2",
+        batch_size=1,
+        num_workers=0,
+        num_train_steps=30_000,
+        wandb_enabled=False,
+    ),
+    TrainConfig(
         name="pi05_cvge_omega_robotwin",
         model=pi0_config.Pi0Config(
             pi05=True,

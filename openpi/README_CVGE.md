@@ -267,7 +267,7 @@ uv run scripts/train_pytorch.py pi05_cvge_omega_libero \
 
 推荐将 `adapter_only` 作为 Stage 1：冻结 VGGT／Omega、PaliGemma 和动作专家，仅让逐层 CVGE 先学会把几何信息接入视觉 token。Stage 1 smoke 至少需要 2 个优化步，因为 CVGE 末端投影为零初始化：第 1 步先使末端投影离开零值，第 2 步起梯度才能进入每层的视觉投影、几何投影和 Cross-Attention。这里默认运行 3 步，便于同时检查这一梯度传播过程。正式训练没有硬编码步数，可先以 5k steps 为检查点，根据验证集决定是否延长到约 10k。
 
-Stage 2 使用 `adapter_action`，从 Stage 1 checkpoint 初始化，联合训练 CVGE、动作专家及对应动作输入／输出模块；π0.5 还包括 time MLP 和动作专家的 adaRMS 投影。其作用是让原动作生成分支适应已经注入的几何表征，可先以约 20k steps 为起点，再由验证曲线和任务成功率决定停止时间。`full` 是可选的更激进策略，会连 PaliGemma 一并解冻。
+Stage 2 使用 `full`，从 Stage 1 checkpoint 初始化，联合训练 π0／π0.5 backbone、CVGE 和对应投影；VGGT／Omega 仍然冻结。可先以约 20k steps 为起点，再由验证曲线和任务成功率决定停止时间。`adapter_action` 保留为低显存消融选项，只训练 CVGE、动作专家及对应输入／输出模块。
 
 VGGT / Omega 在所有策略下保持冻结和 `eval()`。冻结动作模型时只关闭权重梯度，仍保留动作损失穿过模型计算回传到 CVGE 的链路。优化器只接收 `requires_grad=True` 的参数。
 
@@ -384,16 +384,19 @@ uv run pytest -q \
 - 原 π0 / π0.5 初始化、完整 checkpoint 往返、错误配置与缺失权重拒绝加载，包括离散状态设置错配和旧元数据迁移。
 - VGGT-Omega 接口：稀疏层输出只取最后一层、16px patch 与 17 个特殊 token、多种权重格式严格加载、源码命名空间隔离、RoPE 设置告警，以及 `vggt` / `vggt_omega` 的 checkpoint 元数据互斥。
 
-真实权重 smoke 可独立运行，也可用 `--mode all` 顺序运行全部三项：
+原版 VGGT 的真实权重 smoke：
 
 ```bash
 python scripts/smoke_cvge_stage1.py \
-    --mode all \
-    --train-steps 3 \
-    --omega-source /path/to/vggt-omega \
-    --omega-weights /path/to/vggt_omega_1b_416_reproduce.pt \
+    --mode geometry \
+    --backbone vggt \
+    --vggt-source /path/to/VGGDrive \
+    --vggt-weights /path/to/vggt/model.pt \
     --pi05-weights /path/to/pi05/model.safetensors
 ```
+
+使用 VGGT-Omega 时改为 `--backbone vggt_omega`，并传入对应的源码和权重路径。训练梯度
+smoke 使用 `--mode training --train-steps 3`；`--mode both` 顺序检查几何前向和策略采样。
 
 本次真实 π0.5 + VGGT-Omega smoke 结果：
 

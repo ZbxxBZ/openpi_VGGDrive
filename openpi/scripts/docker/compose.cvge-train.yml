@@ -1,0 +1,103 @@
+# Run from the openpi directory with:
+#   cp scripts/docker/cvge-train.env.example scripts/docker/.env
+#   docker compose --env-file scripts/docker/.env -f scripts/docker/compose.cvge-train.yml build
+#   docker compose --env-file scripts/docker/.env -f scripts/docker/compose.cvge-train.yml up -d zbx
+#   docker compose --env-file scripts/docker/.env -f scripts/docker/compose.cvge-train.yml up stage1
+#   docker compose --env-file scripts/docker/.env -f scripts/docker/compose.cvge-train.yml up stage2
+
+name: zbx
+
+x-cvge-runtime: &cvge-runtime
+  image: ${TRAIN_IMAGE:-zbx-openpi:cu128}
+  build:
+    context: ../..
+    dockerfile: scripts/docker/train_cvge.Dockerfile
+  init: true
+  tty: true
+  stdin_open: true
+  working_dir: /app
+  shm_size: ${SHM_SIZE:-32gb}
+  cpus: ${CPU_LIMIT:-32}
+  mem_limit: ${MEM_LIMIT:-128g}
+  pids_limit: 4096
+  stop_grace_period: 2m
+  security_opt:
+    - no-new-privileges:true
+  environment:
+    OPENPI_DATA_HOME: /cache/openpi
+    UV_CACHE_DIR: /cache/uv
+    HF_HOME: /cache/huggingface
+    WANDB_DIR: /root/zbx/checkpoints/wandb
+    WANDB_API_KEY: ${WANDB_API_KEY:-}
+    JAX_PLATFORMS: cpu
+    PYTHONUNBUFFERED: "1"
+    PYTORCH_CUDA_ALLOC_CONF: expandable_segments:True
+    NCCL_DEBUG: ${NCCL_DEBUG:-WARN}
+    NPROC_PER_NODE: ${NPROC_PER_NODE:-1}
+    BATCH_SIZE: ${BATCH_SIZE:-1}
+    NUM_WORKERS: ${NUM_WORKERS:-0}
+    IMAGE_SIZE: ${IMAGE_SIZE:-224}
+    SAVE_INTERVAL: ${SAVE_INTERVAL:-1000}
+    KEEP_PERIOD: ${KEEP_PERIOD:-5000}
+    WANDB_ENABLED: ${WANDB_ENABLED:-0}
+    STAGE1_EXP_NAME: ${STAGE1_EXP_NAME:-robotwin_stage1}
+    STAGE1_STEPS: ${STAGE1_STEPS:-5000}
+    STAGE1_CHECKPOINT_STEP: ${STAGE1_CHECKPOINT_STEP:-5000}
+    STAGE1_RESUME: ${STAGE1_RESUME:-0}
+    STAGE1_OVERWRITE: ${STAGE1_OVERWRITE:-0}
+    STAGE2_EXP_NAME: ${STAGE2_EXP_NAME:-robotwin_stage2}
+    STAGE2_STEPS: ${STAGE2_STEPS:-20000}
+    STAGE2_RESUME: ${STAGE2_RESUME:-0}
+    STAGE2_OVERWRITE: ${STAGE2_OVERWRITE:-0}
+    PYTHON_BIN: /.venv/bin/python
+    TORCHRUN_BIN: /.venv/bin/torchrun
+  deploy:
+    resources:
+      reservations:
+        devices:
+          - driver: nvidia
+            device_ids: ["${GPU_DEVICE_ID:-1}"]
+            capabilities: [gpu]
+
+x-training-volumes: &training-volumes
+  - ${ZBX_ROOT_HOST:?Set ZBX_ROOT_HOST to the host zbx directory}:/root/zbx
+  - ${OPENPI_SOURCE:?Set OPENPI_SOURCE to the host openpi directory}:/app
+  - ${CHECKPOINTS_DIR:?Set CHECKPOINTS_DIR to a writable host directory}:/root/zbx/checkpoints
+  - openpi-download-cache:/cache/openpi
+  - huggingface-cache:/cache/huggingface
+  - uv-cache:/cache/uv
+
+services:
+  zbx:
+    <<: *cvge-runtime
+    container_name: zbx
+    restart: unless-stopped
+    command: ["sleep", "infinity"]
+    volumes:
+      - ${ZBX_ROOT_HOST:?Set ZBX_ROOT_HOST to the host zbx directory}:/root/zbx
+      - ${OPENPI_SOURCE:?Set OPENPI_SOURCE to the host openpi directory}:/app
+      - ${CHECKPOINTS_DIR:?Set CHECKPOINTS_DIR to a writable host directory}:/root/zbx/checkpoints
+      - openpi-download-cache:/cache/openpi
+      - huggingface-cache:/cache/huggingface
+      - uv-cache:/cache/uv
+
+  stage1:
+    <<: *cvge-runtime
+    container_name: zbx-stage1
+    profiles: [stage1]
+    restart: "no"
+    command: ["bash", "scripts/docker/run_cvge_stage.sh", "stage1"]
+    volumes: *training-volumes
+
+  stage2:
+    <<: *cvge-runtime
+    container_name: zbx-stage2
+    profiles: [stage2]
+    restart: "no"
+    command: ["bash", "scripts/docker/run_cvge_stage.sh", "stage2"]
+    volumes: *training-volumes
+
+volumes:
+  openpi-download-cache:
+  huggingface-cache:
+  uv-cache:

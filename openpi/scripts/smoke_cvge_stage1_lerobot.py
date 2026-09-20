@@ -24,12 +24,13 @@ IMAGE_KEYS = ("base_0_rgb", "left_wrist_0_rgb", "right_wrist_0_rgb")
 
 
 def _make_config(args: argparse.Namespace) -> training_config.TrainConfig:
-    config = training_config.get_config("pi05_cvge_omega_robotwin")
+    config_name = "pi05_cvge_robotwin" if args.backbone == "vggt" else "pi05_cvge_omega_robotwin"
+    config = training_config.get_config(config_name)
     geometry = GeometryConfig(
         enabled=True,
-        backbone="vggt_omega",
-        vggt_source_path=str(args.omega_source),
-        vggt_weights_path=str(args.omega_weights),
+        backbone=args.backbone,
+        vggt_source_path=str(args.vggt_source),
+        vggt_weights_path=str(args.vggt_weights),
         image_keys=IMAGE_KEYS,
         image_size=args.image_size,
         dropout=0.0,
@@ -103,12 +104,17 @@ def _inner_gradient_stats(model: PI0Pytorch) -> tuple[int, float]:
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--lerobot-root", type=pathlib.Path, required=True)
-    parser.add_argument("--omega-source", type=pathlib.Path, required=True)
-    parser.add_argument("--omega-weights", type=pathlib.Path, required=True)
+    parser.add_argument("--backbone", choices=("vggt", "vggt_omega"), default="vggt")
+    parser.add_argument(
+        "--vggt-source", "--omega-source", dest="vggt_source", type=pathlib.Path, required=True
+    )
+    parser.add_argument(
+        "--vggt-weights", "--omega-weights", dest="vggt_weights", type=pathlib.Path, required=True
+    )
     parser.add_argument("--pi05-weights", type=pathlib.Path, required=True)
     parser.add_argument("--episodes", type=int, nargs="+", default=[0])
     parser.add_argument("--video-backend", default="pyav")
-    parser.add_argument("--image-size", type=int, default=416)
+    parser.add_argument("--image-size", type=int)
     parser.add_argument("--train-steps", type=int, default=3)
     parser.add_argument("--device", default="cuda")
     args = parser.parse_args()
@@ -185,7 +191,7 @@ def main() -> None:
         print(json.dumps({"event": "optimizer_step_finished", **step_results[-1]}), flush=True)
 
     frozen_modules = {
-        "omega": model.vggt_encoder,
+        "geometry_encoder": model.vggt_encoder,
         "paligemma": model.paligemma_with_expert.paligemma,
         "action_expert": model.paligemma_with_expert.gemma_expert,
     }
